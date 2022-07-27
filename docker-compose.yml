@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:14-alpine
+    container_name: photoview-db
+    restart: always
+    env_file: ./.env
+    environment:
+      - POSTGRES_DB=${POSTGRESDB}
+      - POSTGRES_USER=${POSTGRESUSER}
+      - POSTGRES_PASSWORD=${POSTGRESPASSWORD}
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      - ./dbdump:/tmp/dumps
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    labels:
+      - docker-volume-backup.exec-pre=/bin/bash -c "pg_dumpall -c -U ${POSTGRESUSER} > /tmp/dumps/dump-$$(date +%Y-%m-%d_%H_%M_%S).sql"
+      - docker-volume-backup.exec-label=photo
+      - docker-volume-backup.stop-during-backup=photo
+      - com.centurylinklabs.watchtower.monitor-only="true"
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U ${POSTGRESUSER}"]
+#      interval: 5s
+#      timeout: 5s
+#      retries: 5
+    networks:
+      - photoview_internal
+
+  photoview:
+    image: viktorstrate/photoview:latest
+    container_name: photoview
+    restart: always
+    ports:
+      - "8001:80"
+    depends_on:
+      - db
+#    depends_on:
+#      db:
+#        condition: service_healthy
+    env_file: ./.env
+    environment:
+      - PHOTOVIEW_DATABASE_DRIVER=postgres
+      - PHOTOVIEW_POSTGRES_URL=postgresql://${POSTGRESUSER}:${POSTGRESPASSWORD}@db/${POSTGRESDB}
+      - PHOTOVIEW_MEDIA_CACHE=/app/cache
+      - PHOTOVIEW_DISABLE_FACE_RECOGNITION=1
+      # Optional: To enable map related features, you need to create a mapbox token.
+      # A token can be generated for free here https://account.mapbox.com/access-tokens/
+      # It's a good idea to limit the scope of the token to your own domain, to prevent others from using it.
+      - MAPBOX_TOKEN=${MAPBOXTOKEN}
+    volumes:
+      - ./api_cache:/app/cache
+      # Change This: to the directory where your photos are located on your server.
+      # If the photos are located at `/home/user/photos`, then change this value
+      # to the following: `/home/user/photos:/photos:ro`.
+      # You can mount multiple paths, if your photos are spread across multiple directories.
+      - photos:/photos
+    labels:
+      - "traefik.enable=true"
+      # HTTP-to-HTTPS Redirect
+      - "traefik.http.routers.photoview.entrypoints=websecure"
+      # HTTP Routers
+      - "traefik.http.routers.photoview.rule=Host(`${domain}`)"
+      - "traefik.http.routers.photoview.tls=true"
+      - "traefik.http.routers.photoview.tls.options=myTLSOptions@file"
+      - "traefik.http.routers.photoview.tls.certresolver=le"
+    networks:
+      - web
+      - photoview_internal
+
+networks:
+  web:
+    external: true
+  photoview_internal:
+    external: true
+
+volumes:
+  photos:
+    driver_opts:
+      type: nfs
+      o: addr=${SERVERADRESS},rw
+      device: :${SERVERPATH}
